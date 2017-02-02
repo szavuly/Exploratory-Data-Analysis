@@ -1,0 +1,348 @@
+---
+title: "Internet Adoption"
+author: "Krisztian Szavuly"
+date: '2017 february 2 '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Access to information is an important prerequisite for making decisions, leading to the question of countries’ capabilities in the digital age. Therefore we ask the question of how the performance of countries relates to their internet adoption; performance being defined by gross domestic product (GDP) per capita and readiness by number of internet users per 100 people. In our paper we first examine the relationship between the two, then elaborate on whether is the question a causal one and in which way.
+
+```{r loaddata}
+
+# LIBRARIES
+library(arm)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(pastecs)
+library(DataCombine)
+library(descr)
+library(fBasics)
+library(stargazer)
+library(sandwich)
+library(lmtest)
+library(splines)
+library(readr)
+library(gmodels)
+library(mfx)
+library(descr)
+
+# CLEAR MEMORY
+rm(list = ls())
+
+# SET WORKING DIRECTORY
+setwd("C:\\Users\\kszavuly\\OneDrive\\CEU\\ECON 5008 - Data Analysis for Economic Policy 2 20162017 Fall\\Term project")
+getwd()
+
+# LOAD  DATA
+dataset <- read.csv("924f1225-e93e-4778-b465-f2578c2eef17_Data.csv")
+
+# DATA TRANSFORMATIONS
+names(dataset)[names(dataset) == "ď..Country.Name"] <- "country"
+names(dataset)[names(dataset) == "Country.Code"] <- "code"
+names(dataset)[names(dataset) == "Series.Name"] <- "series"
+names(dataset)[names(dataset) == "X2015..YR2015."] <- "2015"
+dataset[dataset == ".."] = NA
+
+```
+
+## Description of the Data
+
+We sourced data from the World Bank’s World Development Indicators website, downloaded on 12.27.2016. Our dataset contained Internet users (per 100 people), Secure Internet servers, Fixed telephone subscriptions, Fixed telephone subscriptions (per 100 people), Mobile cellular subscriptions (per 100 people) and GDP per capita (constant 2010 US$)* [full descriptions are available in the Appendix] from 1960 to 2016. For the analysis, we ended up using the observations marked with asterisks, until 2015 where data was available.
+
+##Transformations in the Dataset
+
+The sourced dataset lead us to 264 observations with some NA’s (GDPpc: 37, Internet: 16 , Landline (telephone): 9, Mobile: 14), and we decided to drop all observations of countries with incomplete data for any of the categories (series), resulting a dataset of 216 countries.
+
+```{r finalizingdata}
+
+# SUBSETTING AND COMBINING SERIES
+internet <- subset(dataset, select = c("country", "2015"), series == "Internet users (per 100 people)")
+names(internet)[names(internet) == "2015"] <- "internet"
+internet$internet <- as.numeric(as.character(internet$internet))
+landline <- subset(dataset, select = c("country", "2015"), series == "Fixed telephone subscriptions (per 100 people)")
+names(landline)[names(landline) == "2015"] <- "landline"
+landline$landline <- as.numeric(as.character(landline$landline))
+mobile <- subset(dataset, select = c("country", "2015"), series == "Mobile cellular subscriptions (per 100 people)")
+names(mobile)[names(mobile) == "2015"] <- "mobile"
+mobile$mobile <- as.numeric(as.character(mobile$mobile))
+gdppc <- subset(dataset, select = c("country", "2015"), series == "GDP per capita (constant 2010 US$)")
+names(gdppc)[names(gdppc) == "2015"] <- "gdppc"
+gdppc$gdppc <- as.numeric(as.character(gdppc$gdppc))
+gdppc$lngdppc <- log(gdppc$gdppc)
+telco <- merge(gdppc,internet,by="country")
+telco <- merge(telco,landline,by="country")
+telco <- merge(telco,mobile,by="country")
+telco$gdppc <- NULL
+
+# SUMMARY AND FINALIZATION OF THE DATASET
+summary(telco)
+telco <- telco[complete.cases(telco),]
+summary(telco)
+
+```
+
+## First impressions of the Series
+
+Four histograms were built to have a first impression of the series we will be dealing with. We took the natural log of GDP per capita, which presented us a histogram with a very symmetric distribution.
+ 
+The density of internet users is also symmetric but shows specificities. With a bin width of 10 for internet users per 100 people we can spot that penetrations are either under 25%, around 40% or over 70%.
+ 
+Landline penetration is skewed to the right, with not much countries having more than 20%. Mobile subscriptions are difficult to measure with data at the highest density over 100% with more subscription than one per people [see Appendix for description].
+
+```{r exploration}
+
+# HISTOGRAMS
+ggplot(telco, aes(x = lngdppc)) + geom_histogram(stat = "bin", binwidth=0.5, fill="deepskyblue3", colour="deepskyblue3") +labs(x="Binwidth: 0.5", y="Density of lngdppc")
+ggplot(telco, aes(x = internet)) + geom_histogram(stat = "bin", binwidth=10, fill="deepskyblue3", colour="deepskyblue3") +labs(x="Binwidth: 10", y="Density of internet users / 100 people")
+ggplot(telco, aes(x = landline)) + geom_histogram(stat = "bin", binwidth=10, fill="deepskyblue3", colour="deepskyblue3") +labs(x="Binwidth: 10", y="Density of landline users / 100 people")
+ggplot(telco, aes(x = mobile)) + geom_histogram(stat = "bin", binwidth=10, fill="deepskyblue3", colour="deepskyblue3") +labs(x="Binwidth: 10", y="Density of mobile users / 100 people")
+
+# SCATTERPLOTS
+ggplot(data = telco, aes(x=lngdppc, y=internet)) + geom_point(size=1.5, colour="lightsalmon2")
+ggplot(data = telco, aes(x=lngdppc, y=landline)) + geom_point(size=1.5, colour="lightsalmon2")
+ggplot(data = telco, aes(x=lngdppc, y=mobile)) + geom_point(size=1.5, colour="lightsalmon2")
+
+```
+
+## First Findings
+
+The first thing we see when scatterplotting the data points of internet users per 100 people (internet) with the natural log of GDP per capita (lngdppc) is how equally they are following linearity, although with a quite large amount of residuals. Here is the scatterplot shown with a lowess regression with standard error:
+ 
+When taking a closer look at the residuals of the regression, its skewness is -0.61, with a minimum of -47.91 and a maximum of only 27.70: countries, that are lagging behind are doing so more severely.
+
+Stacking lowess, linear and quadratic regressions on the same chart shows very strong similarity, pointing us towards the linear regression.
+ 
+The regressions differ more under 0 internet, but we don’t interpret this, as there is no negative internet penetration. They also differ above 90 internet, but there aren’t much data points above this threshold and we are safe to say, that digital communication capabilities between 90% and 100% internet penetration are quite similar.
+
+## A Positive Relationship
+
+The positive relationship between lngdppc and internet-penetration is beyond doubt: countries with 10% more GDP are expected to have 1.72 more internet user per 100 people on average, with a confidence interval of 1.06 (so between 1.62 and 1.83 more).
+ 
+Two other variables are related to telecommunications: landline and mobile subscriptions. When using these are control variables, we can make the following three statements:
+
+- countries with 10% more GDP and the same landline penetration rate are expected to have 1.33 more internet user per 100 people on average
+
+- countries with 10% more GDP and the same mobile penetration rate are expected to have 1.63 more internet user per 100 people on average
+
+- countries with 10% more GDP and the same landline and mobile penetration rate are expected to have 1.22 more internet user per 100 people on average
+
+Controlling for landline and/or mobile added 0 or only 0.02 and 0.03 to our R-squared, but internet-penetration regression’s coefficient seems to be similar to mobile’s.
+
+```{r firstfindings}
+
+# PLOTTING REGRESSIONS ON INTERNET
+ggplot(data = telco, aes(x=lngdppc, y=internet)) +
+  geom_point(size=1.5, colour="lightsalmon2") +
+  geom_smooth(method="loess", colour="seagreen3", se=T) 
+ggplot(data = telco, aes(x=lngdppc, y=internet)) +
+  geom_point(size=1.5, colour="lightsalmon2") +
+  geom_smooth(method="lm", colour="seagreen3", se=T) 
+ggplot(data = telco, aes(x=lngdppc, y=internet)) +
+  geom_point(size=1.5, colour="lightsalmon2") +
+  geom_smooth(method="lm", formula=y~poly(x,2,raw = TRUE), colour="seagreen3", se=T) 
+ggplot(telco) +
+  geom_smooth(aes(lngdppc, internet), method = "loess", colour = "deepskyblue3", se=F) +
+  annotate("text", x = 7, y = 90, label = "loess", colour = "deepskyblue3") +
+  geom_smooth(aes(lngdppc, internet), method = "lm", colour = "lightsalmon2", se=F) +
+  annotate("text", x = 7, y = 80, label = "lm", colour = "lightsalmon2") +
+  geom_smooth(aes(lngdppc, internet), method = "lm", formula=y~poly(x,2,raw = TRUE), colour = "seagreen3", se=F) +
+  annotate("text", x = 7, y = 70, label = "quadratic", colour = "seagreen3")
+
+# REGRESSIONS ON INTERNET WITH CONTROLS
+reg1 <- lm(internet ~ lngdppc, data = telco)
+reg2 <- lm(internet ~ lngdppc + landline, data = telco)
+reg3 <- lm(internet ~ lngdppc + mobile, data = telco)
+reg4 <- lm(internet ~ lngdppc + landline + mobile, data = telco)
+stargazer(list(reg1, reg2, reg3, reg4), digits = 2, out = "regressions_internet_1.html")
+
+# RESIDUALS
+telco$residreg1 <- resid(reg1)
+ggplot(telco, aes(x = residreg1)) + geom_histogram(stat = "bin", binwidth=10, fill="deepskyblue3", colour="deepskyblue3") +labs(x="Binwidth: 10", y="Density of residuals")
+summary(telco$residreg1)
+basicStats(telco$residreg1)
+
+```
+
+## Exploring Landline Data
+
+As the expected internet users was very different with the landline control variable, we explored these observations separately. The residuals for this data are significant with a variance of 85.5 and its regression on lngdppc has a wide CI of 7.75 to 9.51, so we can drop landline from future observations [see Appendix].
+
+## Similarities Between Internet and Mobile Penetration
+As suspected previously, the slope coefficients on internet and mobile are very similar:
+
+- countries with 10% more GDP are expected to have 1.72 more internet user per 100 people on average, with a confidence interval of 1.06
+- countries with 10% more GDP are expected to have 1.65 more internet user per 100 people on average, with a confidence interval of 2.9
+- countries with 10% more GDP and the same mobile penetration rate are expected to have 1.63 more internet user per 100 people on average, with a confidence interval of 1.32
+
+## Moving on to Causality
+We know now that there is a correlation of higher modern telecommunications (internet and mobile) with higher GDP per capita, but still need to uncover causality and its direction. Is telecommunication driving GDP growth, or is this latter bringing higher internet penetration? To uncover it we’ll proceed with the following hypothesis:
+- we define 1995 to 2005 the “investment period of internet communications” and we’ll uncover the average growth rate of subscribers (it’s indifferent whether governements, companies or individuals invested in growth)
+- we are going to split countries above and below the average growth rate
+- we define 2005 to 2015 the “GDP growth period” uncovering the average GDP growth rate and split split countries above and below it
+- we are going to explore the relationship of internet investments and the upcoming GDP growth rate
+
+```{r landline}
+
+# EXPLORING INTERNET, LANDLINE AND MOBILE
+ggplot(telco) +
+  geom_smooth(aes(lngdppc, internet), method = "loess", colour = "deepskyblue3", se=T) +
+  annotate("text", x = 6, y = 150, label = "internet", colour = "deepskyblue3") +
+  geom_smooth(aes(lngdppc, landline), method = "loess", colour = "lightsalmon2", se=T) +
+  annotate("text", x = 6, y = 140, label = "landline", colour = "lightsalmon2") +
+  geom_smooth(aes(lngdppc, mobile), method = "loess", colour = "seagreen3", se=T) +
+  annotate("text", x = 6, y = 130, label = "mobile", colour = "seagreen3")
+ggplot(telco) +
+  geom_smooth(aes(lngdppc, internet), method = "lm", colour = "deepskyblue3", se=T) +
+  annotate("text", x = 6, y = 150, label = "internet", colour = "deepskyblue3") +
+  geom_smooth(aes(lngdppc, landline), method = "lm", colour = "lightsalmon2", se=T) +
+  annotate("text", x = 6, y = 140, label = "landline", colour = "lightsalmon2") +
+  geom_smooth(aes(lngdppc, mobile), method = "lm", colour = "seagreen3", se=T) +
+  annotate("text", x = 6, y = 130, label = "mobile", colour = "seagreen3")
+
+# EXPLORING LANDLINE CORRELATIONS
+ggplot(data = telco, aes(x=lngdppc, y=landline)) +
+  geom_point(size=1.5, colour="lightsalmon2") +
+  geom_smooth(method="loess", colour="seagreen3", se=T) 
+regland1 <- lm(landline ~ lngdppc, data = telco)
+telco$residregland1 <- resid(regland1)
+ggplot(telco, aes(x = residregland1)) + geom_histogram(stat = "bin", binwidth=10, fill="deepskyblue3", colour="deepskyblue3") +labs(x="Binwidth: 10", y="Density of residuals (landline)")
+summary(telco$residregland1)
+basicStats(telco$residregland1)
+stargazer(list(regland1), digits = 2, out = "regressions_landline_1.html")
+
+# EXPLORING MOBILE CORRELATIONS
+ggplot(data = telco, aes(x=lngdppc, y=mobile)) +
+  geom_point(size=1.5, colour="lightsalmon2") +
+  geom_smooth(method="loess", colour="seagreen3", se=T) 
+regmob1 <- lm(mobile ~ lngdppc, data = telco)
+telco$residregmob1 <- resid(regmob1)
+ggplot(telco, aes(x = residregmob1)) + geom_histogram(stat = "bin", binwidth=10, fill="deepskyblue3", colour="deepskyblue3") +labs(x="Binwidth: 10", y="Density of residuals (mobile)")
+summary(telco$residregmob1)
+basicStats(telco$residregmob1)
+stargazer(list(reg1, reg3, regmob1), digits = 2, out = "regressions_mobile_1.html")
+
+```
+
+## Exploring Internet Investments
+
+We defined internet investments of the governments, companies and individuals resulting in the growth of internet users per 100 people from 1995 to 2005. We introduced a dummy variable of 2005 minus 1995, resulting the following findings (represented also as boxplots below, showing positive outliers in all stages):
+- 1995’s mean: 0.92 (stdev: 2.04)
+- 2005’s mean: 19.92 (stdev: 22.26)
+- growth mean (2005-1995): 23.97 (stdev: 22.15)
+ 
+The distribution of internet penetration growth is skewed to the right with a mean at 23.97.
+ 
+We will use this mean as the standard for internet investments: countries having an internet penetration growth less than 23.97% will be considered low investors in modern digital communications, those above as high investors. We expect that GDP growth will be higher from 2005 to 2015 for countries considered high investors in digital communications.
+64 countries can be considered high investors (reached a penetration of 23.97% after 10 years), 104 countries low investors in internet penetration.	 
+
+```{r setup}
+
+# INTERNET INVESTMENTS
+names(dataset)[names(dataset) == "X1995..YR1995."] <- "1995"
+names(dataset)[names(dataset) == "X2005..YR2005."] <- "2005"
+internetinvest <- subset(dataset, select = c("country", "1995", "2005"), series == "Internet users (per 100 people)")
+internetinvest$"1995" <- as.numeric(as.character(internetinvest$"1995"))
+internetinvest$"2005" <- as.numeric(as.character(internetinvest$"2005"))
+internetinvest$invest <- internetinvest$"2005" - internetinvest$"1995"
+ggplot(internetinvest, aes(x = invest)) + geom_histogram(stat = "bin", binwidth=10, fill="deepskyblue3", colour="deepskyblue3") +labs(x="Binwidth: 10", y="Density of internet growth")
+boxplot(internetinvest$"1995", internetinvest$"2005", internetinvest$invest, xlab = "1995, 2005, 2005-1995", ylab = "Internet users / 100 people")
+basicStats(internetinvest$"1995")
+basicStats(internetinvest$"2005")
+basicStats(internetinvest$invest)
+
+# GROUPS OF HIGH AND LOW INTERNET INVESTORS
+internetinvest$high[internetinvest$invest > 23.97] <- 1
+internetinvest$high[internetinvest$invest < 23.97] <- 0
+internetinvest$low[internetinvest$invest < 23.97] <- 1
+internetinvest$low[internetinvest$invest > 23.97] <- 0
+freq(internetinvest$high, col="deepskyblue3", main="High") 
+basicStats(internetinvest$high)
+basicStats(internetinvest$low)
+
+```
+
+## Trends in GDP
+
+We defined 2005 to 2015 as the fruition period after investing into internet communications (nevertheless, further growth of penetration is expected, but not considered in this exercise). The growth in GDP is showing small numbers, with significant outliers so we’ll explore our final comparison with the natural log of GDP growth from 2005 to 2015.
+
+The distribution of GDP growth after our pre-defined internet communications investment period is skewed to the left with a mean of 6.74. Log GDPpc of 6.74 will be the divider between countries with high and low GDP growth. 111 countries can be considered with GDP per capita growth above the average of 6.74 log, 92 below.	 
+
+```{r investments}
+
+# INTERNET INVESTMENTS
+names(dataset)[names(dataset) == "X1995..YR1995."] <- "1995"
+names(dataset)[names(dataset) == "X2005..YR2005."] <- "2005"
+internetinvest <- subset(dataset, select = c("country", "1995", "2005"), series == "Internet users (per 100 people)")
+internetinvest$"1995" <- as.numeric(as.character(internetinvest$"1995"))
+internetinvest$"2005" <- as.numeric(as.character(internetinvest$"2005"))
+internetinvest$invest <- internetinvest$"2005" - internetinvest$"1995"
+ggplot(internetinvest, aes(x = invest)) + geom_histogram(stat = "bin", binwidth=10, fill="deepskyblue3", colour="deepskyblue3") +labs(x="Binwidth: 10", y="Density of internet growth")
+boxplot(internetinvest$"1995", internetinvest$"2005", internetinvest$invest, xlab = "1995, 2005, 2005-1995", ylab = "Internet users / 100 people")
+basicStats(internetinvest$"1995")
+basicStats(internetinvest$"2005")
+basicStats(internetinvest$invest)
+
+# GROUPS OF HIGH AND LOW INTERNET INVESTORS
+internetinvest$high[internetinvest$invest > 23.97] <- 1
+internetinvest$high[internetinvest$invest < 23.97] <- 0
+internetinvest$low[internetinvest$invest < 23.97] <- 1
+internetinvest$low[internetinvest$invest > 23.97] <- 0
+freq(internetinvest$high, col="deepskyblue3", main="High") 
+basicStats(internetinvest$high)
+basicStats(internetinvest$low)
+
+```
+
+##GDP Growth After Above Average Internet Penetration
+
+Looking at a cross-table of countries having an internet penetration growth above average from 1995 to 2005 and the countries having a GDP growth above average from 2005 to 2015 we can make the following statements:
+- 47.8% of the countries who reached an internet penetration above average between 1995 and 2005 experienced a GDP growth above average in the 10 upcoming years
+- 52.2% of the countries who didn’t reach an internet penetration above average between 1995 and 2005 experienced a GDP growth above average in the 10 upcoming years
+
+```{r growth}
+
+# GDPPC GROWTH
+gdppcgrowth <- subset(dataset, select = c("country", "2005", "2015"), series == "GDP per capita (constant 2010 US$)")
+gdppcgrowth$"2005" <- as.numeric(as.character(gdppcgrowth$"2005"))
+gdppcgrowth$"2015" <- as.numeric(as.character(gdppcgrowth$"2015"))
+gdppcgrowth$growth <- gdppcgrowth$"2015" - gdppcgrowth$"2005"
+ggplot(gdppcgrowth, aes(x = growth)) + geom_histogram(stat = "bin", binwidth=100, fill="deepskyblue3", colour="deepskyblue3") +labs(x="Binwidth: 100", y="Density of GDPPC")
+boxplot(gdppcgrowth$"2005", gdppcgrowth$"2015", gdppcgrowth$growth, xlab = "2005, 2015, 2015-2005", ylab = "GDP per capita (constant 2010 US$)")
+basicStats(gdppcgrowth$"2005")
+basicStats(gdppcgrowth$"2015")
+basicStats(gdppcgrowth$growth)
+gdppcgrowth$lngdppcgrowth <- log(gdppcgrowth$growth)
+ggplot(gdppcgrowth, aes(x = lngdppcgrowth)) + geom_histogram(stat = "bin", binwidth=1, fill="deepskyblue3", colour="deepskyblue3") +labs(x="Binwidth: 100", y="Density of GDPPC")
+basicStats(gdppcgrowth$lngdppcgrowth)
+
+# GROUPS OF HIGH AND LOW GDPGROWTH
+gdppcgrowth$high[gdppcgrowth$lngdppcgrowth > 6.74] <- 1
+gdppcgrowth$high[gdppcgrowth$lngdppcgrowth < 6.74] <- 0
+gdppcgrowth$low[gdppcgrowth$lngdppcgrowth < 6.74] <- 1
+gdppcgrowth$low[gdppcgrowth$lngdppcgrowth > 6.74] <- 0
+freq(gdppcgrowth$high, col="deepskyblue3", main="High") 
+basicStats(gdppcgrowth$high)
+basicStats(gdppcgrowth$low)
+
+# CROSSTABLES
+CrossTable(gdppcgrowth$high, internetinvest$high) 
+CrossTable(gdppcgrowth$high, internetinvest$low) 
+CrossTable(gdppcgrowth$low, internetinvest$high) 
+CrossTable(gdppcgrowth$low, internetinvest$low) 
+
+```
+
+## Conclusion
+
+We come back to our initial question: how the performance of countries relates to their internet adoption? We identified the performance of the countries by GDP per capita and defined the performance review years from 2005 to 2015. We defined internet adoption as the growth rate of internet penetration between 1995 and 2005, the initial years when digital communication started.
+
+According to this dataset and accepting the hypothesis of the period of 1995 to 2005 being the investment year, 2005 to 2015 being the proofing years, there is no evidence that reaching an internet penetration above average leads to higher growth in GDP. It’s also worth mentioning that countries below the average internet penetration growth from 1995 to 2005 were 93.8% likely to be below the average GDP per capita growth between 2005 and 2015.
+
+# Halt and catch fire
